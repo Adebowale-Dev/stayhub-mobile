@@ -1,13 +1,18 @@
 import React from 'react';
-import { StyleSheet, ViewStyle } from 'react-native';
-import { Card as PaperCard, CardProps } from 'react-native-paper';
+import { StyleProp, StyleSheet, ViewStyle } from 'react-native';
+import { Card as PaperCard } from 'react-native-paper';
 
-interface Props extends React.ComponentProps<typeof PaperCard> {
-  style?: ViewStyle;
-}
+type Props = React.PropsWithChildren<{
+  style?: StyleProp<ViewStyle>;
+  [key: string]: any;
+}>;
 
-export function Card({ style, ...props }: Props) {
-  return <PaperCard style={[styles.card, style]} {...props} />;
+export function Card({ style, children, ...props }: Props) {
+  return (
+    <PaperCard style={[styles.card, style]} {...props}>
+      {children}
+    </PaperCard>
+  );
 }
 
 const styles = StyleSheet.create({

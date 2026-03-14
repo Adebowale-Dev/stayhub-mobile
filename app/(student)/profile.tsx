@@ -10,7 +10,9 @@ import {
   StatusBar,
   Modal,
   Switch,
+  Image,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import {
   Text,
   TextInput,
@@ -24,6 +26,36 @@ import { useAuthStore } from '../../store/authStore';
 import { studentAPI, authAPI } from '../../services/api';
 import { APP_CONFIG } from '../../constants/config';
 import { useThemeStore } from '../../store/themeStore';
+import type { NotificationPreferences, NotificationSettings } from '../../types';
+import {
+  getPushNotificationsUnavailableReason,
+  isPushNotificationsSupported,
+  registerForPushNotificationsAsync,
+  unregisterStoredPushTokenAsync,
+} from '../../services/pushNotifications';
+
+const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  pushEnabled: true,
+  emailEscalationEnabled: true,
+  invitationCreated: true,
+  invitationUpdates: true,
+  invitationExpired: true,
+  paymentUpdates: true,
+  reservationUpdates: true,
+};
+
+const buildFallbackNotificationSettings = (
+  preferences?: Partial<NotificationPreferences>
+): NotificationSettings => ({
+  preferences: {
+    ...DEFAULT_NOTIFICATION_PREFERENCES,
+    ...(preferences ?? {}),
+  },
+  devices: [],
+  registeredDevicesCount: 0,
+  hasActiveDevice: false,
+  lastRegisteredAt: null,
+});
 
 export default function ProfileScreen() {
   const user = useAuthStore((state) => state.user);
@@ -49,9 +81,11 @@ export default function ProfileScreen() {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [phone, setPhone] = useState(user?.phone ?? '');
+  const [phone, setPhone] = useState(user?.phone ?? user?.phoneNumber ?? '');
   const [department, setDepartment] = useState(getDeptName(user?.department));
   const [level, setLevel] = useState(user?.level ?? '');
+
+  const [uploading, setUploading] = useState(false);
 
   // ── Change password state ───────────────────────────────────────────────────
   const [pwModalVisible, setPwModalVisible] = useState(false);
@@ -62,20 +96,45 @@ export default function ProfileScreen() {
   const [showCurrentPw, setShowCurrentPw] = useState(false);
   const [showNewPw, setShowNewPw] = useState(false);
   const [showConfirmPw, setShowConfirmPw] = useState(false);
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(
+    buildFallbackNotificationSettings(user?.notificationPreferences)
+  );
+  const [notificationBusy, setNotificationBusy] = useState<
+    keyof NotificationPreferences | 'reconnect' | null
+  >(null);
+  const [notificationMessage, setNotificationMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const loadProfile = async () => {
       setLoading(true);
       try {
-        const res = await studentAPI.getProfile();
-        const student = (res.data as any).data?.student ?? (res.data as any).student;
+        const [profileResult, settingsResult] = await Promise.allSettled([
+          studentAPI.getProfile(),
+          studentAPI.getNotificationSettings(),
+        ]);
+
+        const student =
+          profileResult.status === 'fulfilled'
+            ? (profileResult.value.data as any).data?.student ?? (profileResult.value.data as any).student
+            : null;
         if (student) {
           updateUser(student);
-          setPhone(student.phone ?? '');
+          setPhone(student.phone ?? student.phoneNumber ?? '');
           setDepartment(getDeptName(student.department));
           setLevel(student.level ?? '');
           // Sync theme preference from backend
           if (student.theme) await setTheme(student.theme === 'dark');
+        }
+
+        if (settingsResult.status === 'fulfilled') {
+          const settings = (settingsResult.value.data as any).data ?? buildFallbackNotificationSettings();
+          setNotificationSettings(settings);
+          updateUser({
+            notificationPreferences: settings.preferences,
+            ...(settings.theme ? { theme: settings.theme } : {}),
+          });
+        } else {
+          setNotificationSettings(buildFallbackNotificationSettings(student?.notificationPreferences));
         }
       } catch {
         // ignore
@@ -89,7 +148,7 @@ export default function ProfileScreen() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const res = await studentAPI.updateProfile({ phone, department, level });
+      const res = await studentAPI.updateProfile({ phoneNumber: phone, department, level });
       const updated = (res.data as any).data?.student ?? (res.data as any).student;
       if (updated) updateUser(updated);
       setEditing(false);
@@ -108,6 +167,11 @@ export default function ProfileScreen() {
         text: 'Sign Out',
         style: 'destructive',
         onPress: async () => {
+          try {
+            await unregisterStoredPushTokenAsync(async (token) => {
+              await studentAPI.unregisterPushDevice(token);
+            });
+          } catch {}
           try { await authAPI.logout(); } catch {}
           await logout();
           router.replace('/(auth)/login');
@@ -131,7 +195,11 @@ export default function ProfileScreen() {
     }
     setPwSaving(true);
     try {
-      await authAPI.changePassword({ currentPassword: currentPw, newPassword: newPw });
+      await authAPI.changePassword({
+        currentPassword: currentPw,
+        newPassword: newPw,
+        confirmPassword: confirmPw,
+      });
       setPwModalVisible(false);
       setCurrentPw('');
       setNewPw('');
@@ -161,11 +229,275 @@ export default function ProfileScreen() {
     } catch {}
   };
 
+  const applyNotificationSettings = (settings: NotificationSettings) => {
+    setNotificationSettings(settings);
+    updateUser({
+      notificationPreferences: settings.preferences,
+      ...(settings.theme ? { theme: settings.theme } : {}),
+    });
+  };
+
+  const syncPushDevice = async (preferences: NotificationPreferences) => {
+    const result = await registerForPushNotificationsAsync(preferences);
+
+    if (result.status !== 'registered' || !result.token) {
+      setNotificationMessage(result.message ?? 'Push notifications are not ready on this device yet.');
+      return result;
+    }
+
+    const response = await studentAPI.registerPushDevice({
+      token: result.token,
+      platform: result.platform ?? Platform.OS,
+      appOwnership: result.appOwnership ?? null,
+      deviceName: result.deviceName ?? null,
+      projectId: result.projectId ?? null,
+    });
+    const nextSettings = (response.data as any).data as NotificationSettings;
+    applyNotificationSettings(nextSettings);
+    setNotificationMessage('Push alerts are active on this device.');
+
+    return result;
+  };
+
+  const handleNotificationToggle = async (
+    key: keyof NotificationPreferences,
+    value: boolean
+  ) => {
+    const previousSettings = notificationSettings;
+    const optimisticSettings: NotificationSettings = {
+      ...notificationSettings,
+      preferences: {
+        ...notificationSettings.preferences,
+        [key]: value,
+      },
+    };
+
+    setNotificationBusy(key);
+    setNotificationSettings(optimisticSettings);
+
+    try {
+      const response = await studentAPI.updateNotificationPreferences({
+        [key]: value,
+      });
+      const updatedSettings = (response.data as any).data as NotificationSettings;
+      applyNotificationSettings(updatedSettings);
+
+      if (key === 'pushEnabled') {
+        if (value) {
+          const result = await syncPushDevice(updatedSettings.preferences);
+          if (result.status === 'denied') {
+            Alert.alert(
+              'Permission Needed',
+              result.message ?? 'Allow notifications in your device settings to receive room alerts.'
+            );
+          } else if (result.status === 'unsupported') {
+            Alert.alert(
+              'Development Build Needed',
+              result.message ??
+                'Push notifications are not available in Expo Go. Use a development build instead.'
+            );
+          }
+        } else {
+          await unregisterStoredPushTokenAsync(async (token) => {
+            await studentAPI.unregisterPushDevice(token);
+          });
+
+          const refreshed = await studentAPI.getNotificationSettings();
+          applyNotificationSettings((refreshed.data as any).data as NotificationSettings);
+          setNotificationMessage('Push alerts have been turned off for this device.');
+        }
+      }
+    } catch (e: any) {
+      setNotificationSettings(previousSettings);
+      Alert.alert('Error', e.response?.data?.message ?? 'Failed to update notification settings.');
+    } finally {
+      setNotificationBusy(null);
+    }
+  };
+
+  const handleReconnectDevice = async () => {
+    if (!notificationSettings.preferences.pushEnabled) {
+      Alert.alert('Push Alerts Off', 'Turn on push alerts first, then reconnect this device.');
+      return;
+    }
+
+    if (!APP_CONFIG.EAS_PROJECT_ID) {
+      Alert.alert(
+        'Expo Project ID Needed',
+        'Add EXPO_EAS_PROJECT_ID to your mobile environment before reconnecting this device for push alerts.'
+      );
+      return;
+    }
+
+    setNotificationBusy('reconnect');
+    try {
+      const result = await syncPushDevice(notificationSettings.preferences);
+      if (result.status === 'denied') {
+        Alert.alert(
+          'Permission Needed',
+          result.message ?? 'Allow notifications in your device settings to receive room alerts.'
+        );
+      } else if (result.status === 'unsupported') {
+        Alert.alert(
+          'Development Build Needed',
+          result.message ??
+            'Push notifications are not available in Expo Go. Use a development build instead.'
+        );
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e.response?.data?.message ?? 'Failed to reconnect this device.');
+    } finally {
+      setNotificationBusy(null);
+    }
+  };
+
+  const handleNotificationPairToggle = async (
+    firstKey: keyof NotificationPreferences,
+    secondKey: keyof NotificationPreferences,
+    value: boolean
+  ) => {
+    const previousSettings = notificationSettings;
+    const optimisticSettings: NotificationSettings = {
+      ...notificationSettings,
+      preferences: {
+        ...notificationSettings.preferences,
+        [firstKey]: value,
+        [secondKey]: value,
+      },
+    };
+
+    setNotificationBusy(firstKey);
+    setNotificationSettings(optimisticSettings);
+
+    try {
+      const response = await studentAPI.updateNotificationPreferences({
+        [firstKey]: value,
+        [secondKey]: value,
+      });
+      applyNotificationSettings((response.data as any).data as NotificationSettings);
+    } catch (e: any) {
+      setNotificationSettings(previousSettings);
+      Alert.alert('Error', e.response?.data?.message ?? 'Failed to update notification settings.');
+    } finally {
+      setNotificationBusy(null);
+    }
+  };
+
+  const pickAndUpload = async (source: 'camera' | 'library') => {
+    try {
+      let result: ImagePicker.ImagePickerResult;
+
+      if (source === 'camera') {
+        const { status } = await ImagePicker.requestCameraPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission needed', 'Camera access is required to take a photo.');
+          return;
+        }
+        result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
+          allowsEditing: true,
+          aspect: [1, 1],
+          quality: 0.7,
+        });
+      } else {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission needed', 'Photo library access is required.');
+          return;
+        }
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          allowsEditing: true,
+          aspect: [1, 1],
+          quality: 0.7,
+        });
+      }
+
+      if (result.canceled) return;
+
+      const asset = result.assets[0];
+
+      // Derive safe fallback values — mimeType/fileName can be null on some
+      // Android devices or when the image comes from the camera.
+      const mimeType = asset.mimeType ?? 'image/jpeg';
+      const ext      = mimeType.split('/')[1] ?? 'jpg';
+      const fileName = asset.fileName ?? `avatar_${Date.now()}.${ext}`;
+
+      const formData = new FormData();
+      formData.append('picture', {
+        uri:  asset.uri,
+        type: mimeType,
+        name: fileName,
+      } as any);
+
+      setUploading(true);
+      const res = await studentAPI.uploadProfilePicture(formData);
+      const updated = (res.data as any).data?.student ?? (res.data as any).student;
+      if (updated) updateUser(updated);
+      Alert.alert('Success', 'Profile picture updated.');
+    } catch (e: any) {
+      // Show the real error so it's easier to debug
+      const msg =
+        e.response?.data?.message ??
+        e.message ??
+        'Failed to upload picture.';
+      Alert.alert('Upload Error', msg);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleRemovePicture = async () => {
+    setUploading(true);
+    try {
+      const res = await studentAPI.updateProfile({ profilePicture: null });
+      const updated = (res.data as any).data?.student ?? (res.data as any).student;
+      if (updated) updateUser(updated);
+    } catch (e: any) {
+      Alert.alert('Error', e.response?.data?.message ?? 'Failed to remove picture.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleAvatarPress = () => {
+    const options: any[] = [
+      { text: 'Take Photo',           onPress: () => pickAndUpload('camera') },
+      { text: 'Choose from Library',  onPress: () => pickAndUpload('library') },
+    ];
+    if (user?.profilePicture) {
+      options.push({ text: 'Remove Photo', style: 'destructive', onPress: handleRemovePicture });
+    }
+    options.push({ text: 'Cancel', style: 'cancel' });
+    Alert.alert('Profile Picture', 'Choose an option', options);
+  };
+
   const initials = user
     ? `${user.firstName?.[0] ?? ''}${user.lastName?.[0] ?? ''}`
     : 'SH';
 
   const deptName = getDeptName(user?.department);
+  const notificationPreferences = notificationSettings.preferences;
+  const notificationStatusText = !isPushNotificationsSupported()
+    ? getPushNotificationsUnavailableReason() ??
+      'Push notifications are not available in this build.'
+    : !APP_CONFIG.EAS_PROJECT_ID
+    ? 'Add an Expo project ID to finish push setup for builds.'
+    : !notificationPreferences.pushEnabled
+    ? 'Push alerts are turned off.'
+    : notificationSettings.hasActiveDevice
+    ? `Active on ${notificationSettings.registeredDevicesCount} device${
+        notificationSettings.registeredDevicesCount === 1 ? '' : 's'
+      }.`
+    : notificationMessage || 'Enable permission and reconnect this device to receive alerts.';
+  const notificationMetaText = notificationSettings.lastRegisteredAt
+    ? `Last synced ${new Date(notificationSettings.lastRegisteredAt).toLocaleString('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      })}`
+    : 'Urgent invites and expiry alerts will still fall back to email.';
 
   if (loading) {
     return (
@@ -192,11 +524,34 @@ export default function ProfileScreen() {
             <View style={styles.bubble1} />
             <View style={styles.bubble2} />
 
-            <View style={styles.avatarRing}>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>{initials}</Text>
+            <TouchableOpacity
+              onPress={handleAvatarPress}
+              activeOpacity={0.85}
+              disabled={uploading}
+              style={styles.avatarWrap}
+            >
+              <View style={styles.avatarRing}>
+                {user?.profilePicture ? (
+                  <Image source={{ uri: user.profilePicture }} style={styles.avatarImage} />
+                ) : (
+                  <View style={styles.avatar}>
+                    <Text style={styles.avatarText}>{initials}</Text>
+                  </View>
+                )}
               </View>
-            </View>
+
+              {/* Upload spinner or camera badge */}
+              {uploading ? (
+                <View style={styles.avatarOverlay}>
+                  <ActivityIndicator size="small" color="#fff" />
+                </View>
+              ) : (
+                <View style={styles.cameraBadge}>
+                  <MaterialCommunityIcons name="camera" size={13} color="#fff" />
+                </View>
+              )}
+            </TouchableOpacity>
+
             <Text style={styles.heroName}>{user?.firstName} {user?.lastName}</Text>
             <Text style={styles.heroMatric}>{user?.matricNumber}</Text>
             {user?.email ? <Text style={styles.heroEmail}>{user.email}</Text> : null}
@@ -292,7 +647,7 @@ export default function ProfileScreen() {
             ) : (
               <>
                 {[
-                  { label: 'Phone',      value: user?.phone },
+                  { label: 'Phone',      value: user?.phone ?? user?.phoneNumber },
                   { label: 'Department', value: deptName },
                   { label: 'Level',      value: user?.level ? `${user.level} Level` : undefined },
                 ].map((field, i) => (
@@ -344,6 +699,145 @@ export default function ProfileScreen() {
                 onValueChange={handleThemeToggle}
                 trackColor={{ false: '#E0E0E0', true: '#42A5F5' }}
                 thumbColor={isDark ? '#1565C0' : '#f4f3f4'}
+              />
+            </View>
+
+            <View style={[styles.sep, dynSep]} />
+
+            <Text style={[styles.settingSection, dynTextSec, { marginTop: 14 }]}>Notifications</Text>
+
+            <View style={styles.settingRow}>
+              <View style={[styles.settingIconWrap, { backgroundColor: '#E8F5E9' }]}>
+                <MaterialCommunityIcons name="bell-ring-outline" size={18} color="#2E7D32" />
+              </View>
+              <View style={styles.settingCopy}>
+                <Text style={[styles.settingLabel, dynText]}>Push Alerts</Text>
+                <Text style={[styles.settingHint, dynTextSec]}>{notificationStatusText}</Text>
+              </View>
+              <Switch
+                value={notificationPreferences.pushEnabled}
+                onValueChange={(value) => handleNotificationToggle('pushEnabled', value)}
+                trackColor={{ false: '#E0E0E0', true: '#66BB6A' }}
+                thumbColor={notificationPreferences.pushEnabled ? '#2E7D32' : '#f4f3f4'}
+                disabled={notificationBusy === 'pushEnabled'}
+              />
+            </View>
+
+            <View style={[styles.sep, dynSep]} />
+
+            <TouchableOpacity
+              style={styles.settingRow}
+              activeOpacity={0.7}
+              onPress={handleReconnectDevice}
+              disabled={notificationBusy === 'reconnect'}
+            >
+              <View style={[styles.settingIconWrap, { backgroundColor: '#E3F2FD' }]}>
+                <MaterialCommunityIcons name="cellphone-link" size={18} color="#1565C0" />
+              </View>
+              <View style={styles.settingCopy}>
+                <Text style={[styles.settingLabel, dynText]}>Reconnect This Device</Text>
+                <Text style={[styles.settingHint, dynTextSec]}>{notificationMetaText}</Text>
+              </View>
+              {notificationBusy === 'reconnect' ? (
+                <ActivityIndicator size={18} color="#1565C0" />
+              ) : (
+                <MaterialCommunityIcons name="chevron-right" size={20} color="#BDBDBD" />
+              )}
+            </TouchableOpacity>
+
+            <View style={[styles.sep, dynSep]} />
+
+            <View style={styles.settingRow}>
+              <View style={[styles.settingIconWrap, { backgroundColor: '#FFF3E0' }]}>
+                <MaterialCommunityIcons name="email-sync-outline" size={18} color="#EF6C00" />
+              </View>
+              <View style={styles.settingCopy}>
+                <Text style={[styles.settingLabel, dynText]}>Email Backup</Text>
+                <Text style={[styles.settingHint, dynTextSec]}>
+                  Send email too when push is unavailable or an invitation is urgent.
+                </Text>
+              </View>
+              <Switch
+                value={notificationPreferences.emailEscalationEnabled}
+                onValueChange={(value) => handleNotificationToggle('emailEscalationEnabled', value)}
+                trackColor={{ false: '#E0E0E0', true: '#FFB74D' }}
+                thumbColor={notificationPreferences.emailEscalationEnabled ? '#EF6C00' : '#f4f3f4'}
+                disabled={notificationBusy === 'emailEscalationEnabled'}
+              />
+            </View>
+
+            <View style={[styles.sep, dynSep]} />
+
+            <View style={styles.settingRow}>
+              <View style={[styles.settingIconWrap, { backgroundColor: '#E8EAF6' }]}>
+                <MaterialCommunityIcons name="account-multiple-outline" size={18} color="#3949AB" />
+              </View>
+              <View style={styles.settingCopy}>
+                <Text style={[styles.settingLabel, dynText]}>Room Invite Alerts</Text>
+                <Text style={[styles.settingHint, dynTextSec]}>
+                  Get notified immediately when a friend reserves a bed for you.
+                </Text>
+              </View>
+              <Switch
+                value={notificationPreferences.invitationCreated}
+                onValueChange={(value) => handleNotificationToggle('invitationCreated', value)}
+                trackColor={{ false: '#E0E0E0', true: '#9FA8DA' }}
+                thumbColor={notificationPreferences.invitationCreated ? '#3949AB' : '#f4f3f4'}
+                disabled={notificationBusy === 'invitationCreated'}
+              />
+            </View>
+
+            <View style={[styles.sep, dynSep]} />
+
+            <View style={styles.settingRow}>
+              <View style={[styles.settingIconWrap, { backgroundColor: '#FCE4EC' }]}>
+                <MaterialCommunityIcons name="account-check-outline" size={18} color="#C2185B" />
+              </View>
+              <View style={styles.settingCopy}>
+                <Text style={[styles.settingLabel, dynText]}>Invite Responses & Expiry</Text>
+                <Text style={[styles.settingHint, dynTextSec]}>
+                  See when friends approve, reject, or allow an invite to expire.
+                </Text>
+              </View>
+              <Switch
+                value={notificationPreferences.invitationUpdates && notificationPreferences.invitationExpired}
+                onValueChange={(value) =>
+                  handleNotificationPairToggle('invitationUpdates', 'invitationExpired', value)
+                }
+                trackColor={{ false: '#E0E0E0', true: '#F48FB1' }}
+                thumbColor={
+                  notificationPreferences.invitationUpdates && notificationPreferences.invitationExpired
+                    ? '#C2185B'
+                    : '#f4f3f4'
+                }
+                disabled={notificationBusy === 'invitationUpdates'}
+              />
+            </View>
+
+            <View style={[styles.sep, dynSep]} />
+
+            <View style={styles.settingRow}>
+              <View style={[styles.settingIconWrap, { backgroundColor: '#E0F2F1' }]}>
+                <MaterialCommunityIcons name="credit-card-check-outline" size={18} color="#00796B" />
+              </View>
+              <View style={styles.settingCopy}>
+                <Text style={[styles.settingLabel, dynText]}>Payment & Reservation Updates</Text>
+                <Text style={[styles.settingHint, dynTextSec]}>
+                  Keep payment confirmation and confirmed-room updates on this phone.
+                </Text>
+              </View>
+              <Switch
+                value={notificationPreferences.paymentUpdates && notificationPreferences.reservationUpdates}
+                onValueChange={(value) =>
+                  handleNotificationPairToggle('paymentUpdates', 'reservationUpdates', value)
+                }
+                trackColor={{ false: '#E0E0E0', true: '#80CBC4' }}
+                thumbColor={
+                  notificationPreferences.paymentUpdates && notificationPreferences.reservationUpdates
+                    ? '#00796B'
+                    : '#f4f3f4'
+                }
+                disabled={notificationBusy === 'paymentUpdates'}
               />
             </View>
 
@@ -541,7 +1035,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarText: { color: '#fff', fontWeight: '800', fontSize: 28 },
+  avatarText:  { color: '#fff', fontWeight: '800', fontSize: 28 },
+  avatarImage: { width: '100%', height: '100%', borderRadius: 40 },
+  avatarWrap:  { position: 'relative', marginBottom: 14, alignSelf: 'center' },
+  avatarOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 44,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cameraBadge: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#1565C0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
   heroName:   { color: '#fff', fontSize: 20, fontWeight: '700', marginBottom: 4 },
   heroMatric: { color: 'rgba(255,255,255,0.6)', fontSize: 13, marginBottom: 3 },
   heroEmail:  { color: 'rgba(255,255,255,0.45)', fontSize: 12 },
@@ -627,6 +1143,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: '#1A1A2E',
+  },
+  settingCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  settingHint: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#757575',
   },
 
   // ── Change Password Modal ──────────────────────────

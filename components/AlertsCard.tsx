@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   StyleSheet,
@@ -7,16 +7,15 @@ import {
 } from 'react-native';
 import { Text, useTheme } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { studentAPI } from '../services/api';
-import type { Alert } from '../types';
+import type { StudentNotification } from '../types';
+import { toMobileNotificationRoute } from '../utils/notificationRoutes';
 
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
-const DISMISSED_KEY = 'dismissed_alert_ids';
-
 const TYPE_STYLES: Record<
-  Alert['type'],
+  StudentNotification['type'],
   { iconBg: string; iconColor: string; accentColor: string }
 > = {
   warning: { iconBg: '#FFF3E0', iconColor: '#E65100', accentColor: '#FF9800' },
@@ -27,54 +26,60 @@ const TYPE_STYLES: Record<
 
 export default function AlertsCard() {
   const theme = useTheme();
+  const router = useRouter();
 
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [notifications, setNotifications] = useState<StudentNotification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [updatingIds, setUpdatingIds] = useState<Set<string>>(new Set());
 
-  const loadDismissed = useCallback(async (): Promise<Set<string>> => {
+  const loadNotifications = useCallback(async () => {
+    setLoading(true);
     try {
-      const raw = await AsyncStorage.getItem(DISMISSED_KEY);
-      return raw ? new Set<string>(JSON.parse(raw)) : new Set<string>();
+      const response = await studentAPI.getNotifications();
+      const payload = response.data as any;
+      const data = payload?.data ?? [];
+      setNotifications(Array.isArray(data) ? data : []);
     } catch {
-      return new Set<string>();
+      setNotifications([]);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    let mounted = true;
-    const init = async () => {
-      const [dismissedSet, alertsRes] = await Promise.allSettled([
-        loadDismissed(),
-        studentAPI.getAlerts(),
-      ]);
+  useFocusEffect(
+    useCallback(() => {
+      loadNotifications();
+    }, [loadNotifications])
+  );
 
-      if (!mounted) return;
+  const markRead = async (notification: StudentNotification, navigate = false) => {
+    setUpdatingIds((current) => new Set(current).add(notification._id));
 
-      if (dismissedSet.status === 'fulfilled') {
-        setDismissed(dismissedSet.value);
-      }
-      if (alertsRes.status === 'fulfilled') {
-        const data = alertsRes.value.data.data ?? (alertsRes.value.data as any);
-        setAlerts(Array.isArray(data) ? data : []);
-      }
-      setLoading(false);
-    };
-    init();
-    return () => { mounted = false; };
-  }, [loadDismissed]);
-
-  const dismiss = async (id: string) => {
-    const next = new Set(dismissed).add(id);
-    setDismissed(next);
     try {
-      await AsyncStorage.setItem(DISMISSED_KEY, JSON.stringify([...next]));
+      if (!notification.read) {
+        await studentAPI.markNotificationsRead({ ids: [notification._id] });
+        setNotifications((current) =>
+          current.map((item) =>
+            item._id === notification._id ? { ...item, read: true } : item
+          )
+        );
+      }
     } catch {
-      // ignore storage errors
+      // keep the card functional even if marking read fails
+    } finally {
+      setUpdatingIds((current) => {
+        const next = new Set(current);
+        next.delete(notification._id);
+        return next;
+      });
+
+      if (navigate) {
+        router.push(toMobileNotificationRoute(notification.destination));
+      }
     }
   };
 
-  const visible = alerts.filter((a) => !dismissed.has(a._id));
+  const unread = notifications.filter((notification) => !notification.read);
 
   if (loading) {
     return (
@@ -84,70 +89,93 @@ export default function AlertsCard() {
     );
   }
 
-  if (visible.length === 0) return null;
+  if (unread.length === 0) return null;
 
   return (
     <View>
-      {/* Section label */}
       <Text style={[styles.sectionLabel, { color: theme.colors.onSurfaceVariant }]}>
-        Alerts
+        Notifications
       </Text>
 
       <View style={[styles.card, { backgroundColor: theme.colors.surface }]}>
-        {/* Card header */}
         <View style={styles.cardHeader}>
           <View style={styles.headerLeft}>
-            <MaterialCommunityIcons name="bell-outline" size={16} color="#1565C0" />
+            <MaterialCommunityIcons name="bell-ring-outline" size={16} color="#1565C0" />
             <Text style={[styles.headerTitle, { color: theme.colors.onSurface }]}>
-              Reminders
+              Unread Updates
             </Text>
           </View>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{visible.length}</Text>
+          <View style={styles.headerActions}>
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{unread.length}</Text>
+            </View>
+            <TouchableOpacity onPress={() => router.push('/(student)/notifications')}>
+              <Text style={styles.viewAllText}>View all</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
         <View style={[styles.divider, { backgroundColor: theme.colors.surfaceVariant }]} />
 
-        {/* Alert rows */}
-        {visible.map((alert, index) => {
-          const ts = TYPE_STYLES[alert.type] ?? TYPE_STYLES.info;
-          const isLast = index === visible.length - 1;
+        {unread.slice(0, 4).map((notification, index) => {
+          const ts = TYPE_STYLES[notification.type] ?? TYPE_STYLES.info;
+          const isLast = index === Math.min(unread.length, 4) - 1;
+          const isUpdating = updatingIds.has(notification._id);
+
           return (
-            <View key={alert._id}>
+            <View key={notification._id}>
               <View style={styles.alertRow}>
-                {/* Left accent bar */}
                 <View style={[styles.accentBar, { backgroundColor: ts.accentColor }]} />
 
-                {/* Icon */}
-                <View style={[styles.iconBox, { backgroundColor: ts.iconBg }]}>
-                  <MaterialCommunityIcons
-                    name={(alert.icon as IconName) || 'information-outline'}
-                    size={18}
-                    color={ts.iconColor}
-                  />
-                </View>
-
-                {/* Message */}
-                <Text
-                  style={[styles.message, { color: theme.colors.onSurface }]}
-                  numberOfLines={2}
-                >
-                  {alert.message}
-                </Text>
-
-                {/* Dismiss button */}
                 <TouchableOpacity
-                  onPress={() => dismiss(alert._id)}
+                  style={styles.notificationBody}
+                  activeOpacity={0.82}
+                  onPress={() => markRead(notification, true)}
+                >
+                  <View style={[styles.iconBox, { backgroundColor: ts.iconBg }]}>
+                    <MaterialCommunityIcons
+                      name={(notification.icon as IconName) || 'information-outline'}
+                      size={18}
+                      color={ts.iconColor}
+                    />
+                  </View>
+
+                  <View style={styles.textStack}>
+                    <Text
+                      style={[styles.message, { color: theme.colors.onSurface }]}
+                      numberOfLines={2}
+                    >
+                      {notification.message}
+                    </Text>
+                    <Text style={[styles.timestamp, { color: theme.colors.onSurfaceVariant }]} numberOfLines={1}>
+                      {notification.createdAt
+                        ? new Date(notification.createdAt).toLocaleString('en-GB', {
+                            day: 'numeric',
+                            month: 'short',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })
+                        : 'Now'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => markRead(notification)}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   style={styles.dismissBtn}
-                  accessibilityLabel="Dismiss alert"
+                  accessibilityLabel="Mark notification as read"
+                  disabled={isUpdating}
                 >
-                  <MaterialCommunityIcons
-                    name="close"
-                    size={15}
-                    color={theme.colors.onSurfaceVariant}
-                  />
+                  {isUpdating ? (
+                    <ActivityIndicator size="small" color={theme.colors.onSurfaceVariant} />
+                  ) : (
+                    <MaterialCommunityIcons
+                      name="check"
+                      size={16}
+                      color={theme.colors.onSurfaceVariant}
+                    />
+                  )}
                 </TouchableOpacity>
               </View>
 
@@ -198,6 +226,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
   },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
   headerTitle: {
     fontSize: 13,
     fontWeight: '700',
@@ -214,6 +247,11 @@ const styles = StyleSheet.create({
   badgeText: {
     color: '#fff',
     fontSize: 11,
+    fontWeight: '700',
+  },
+  viewAllText: {
+    color: '#1565C0',
+    fontSize: 12,
     fontWeight: '700',
   },
 
@@ -234,6 +272,12 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     marginLeft: 0,
   },
+  notificationBody: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
   iconBox: {
     width: 34,
     height: 34,
@@ -242,13 +286,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     flexShrink: 0,
   },
-  message: {
+  textStack: {
     flex: 1,
+    gap: 2,
+  },
+  message: {
     fontSize: 13,
     lineHeight: 18,
   },
+  timestamp: {
+    fontSize: 11,
+  },
   dismissBtn: {
-    flexShrink: 0,
+    width: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   rowDivider: {

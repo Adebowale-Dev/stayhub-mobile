@@ -7,10 +7,12 @@
 build/
 .idea
 .gradle
+.gradle-user-home/
 local.properties
 *.iml
 *.hprof
 .cxx/
+build_log.txt
 
 # Bundle artifacts
 *.jsbundle

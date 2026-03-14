@@ -20,11 +20,19 @@ npm run ios
 
 ## Configuration
 
-1. Open `constants/config.ts` and set your backend URL:
-   - `localhost` for emulator
-   - Your computer's LAN IP (e.g. `192.168.1.x`) for physical device
+1. Copy `.env.example` to `.env` and set:
+   - `API_BASE_URL`
+   - `PAYSTACK_PUBLIC_KEY`
+   - `EXPO_EAS_PROJECT_ID`
 
-2. Set your Paystack public key in `constants/config.ts` and `.env`.
+2. Backend URL:
+   - use `localhost` for emulator-only testing
+   - use your computer's LAN IP (for example `192.168.1.x`) for a physical device
+
+3. Push notifications:
+   - `expo-notifications` is installed and enabled in `app.config.js`
+   - rebuild the native app after package changes with `npm run android` or an EAS build
+   - `EXPO_EAS_PROJECT_ID` is required for reliable Expo push token generation in builds
 
 ## Project Structure
 

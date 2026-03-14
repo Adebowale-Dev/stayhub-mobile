@@ -109,6 +109,7 @@ const ACTIONS: {
   bg: string;
 }[] = [
   { icon: 'home-city',      label: 'Hostels',  sub: 'Browse available', route: '/(student)/hostels',     color: '#1565C0', bg: '#E3F2FD' },
+  { icon: 'bell-ring-outline', label: 'Alerts', sub: 'Unread updates', route: '/(student)/notifications', color: '#EF6C00', bg: '#FFF3E0' },
   { icon: 'credit-card',    label: 'Payment',  sub: 'Manage payments',  route: '/(student)/payment',     color: '#6A1B9A', bg: '#F3E5F5' },
   { icon: 'calendar-check', label: 'Reserve',  sub: 'My reservations',  route: '/(student)/reservation', color: '#00796B', bg: '#E0F2F1' },
   { icon: 'account-circle', label: 'Profile',  sub: 'View & edit info', route: '/(student)/profile',     color: '#C62828', bg: '#FFEBEE' },
@@ -169,6 +170,12 @@ export default function DashboardScreen() {
 
   const paymentPaid    = dashboard?.paymentStatus === 'paid';
   const hasReservation = dashboard?.hasReservation ?? false;
+  const reservationChipLabel =
+    dashboard?.reservationStatus === 'temporary'
+      ? 'Invite Pending'
+      : hasReservation
+      ? 'Room Reserved'
+      : 'No Reservation';
 
   // ── Hero (shared between normal and error states) ──
   const HeroBanner = () => (
@@ -226,7 +233,7 @@ export default function DashboardScreen() {
               color={hasReservation ? '#90CAF9' : 'rgba(255,255,255,0.55)'}
             />
             <Text style={[styles.chipText, { color: hasReservation ? '#90CAF9' : 'rgba(255,255,255,0.55)' }]}>
-              {hasReservation ? 'Room Reserved' : 'No Reservation'}
+              {reservationChipLabel}
             </Text>
           </View>
         </View>

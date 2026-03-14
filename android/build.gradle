@@ -11,6 +11,7 @@ buildscript {
         ndkVersion = "26.1.10909125"
     }
     repositories {
+        maven { url 'https://maven-central.storage-download.googleapis.com/maven2/' }
         google()
         mavenCentral()
     }
@@ -34,6 +35,7 @@ allprojects {
             url(new File(['node', '--print', "require.resolve('jsc-android/package.json', { paths: [require.resolve('react-native/package.json')] })"].execute(null, rootDir).text.trim(), '../dist'))
         }
 
+        maven { url 'https://maven-central.storage-download.googleapis.com/maven2/' }
         google()
         mavenCentral()
         maven { url 'https://www.jitpack.io' }

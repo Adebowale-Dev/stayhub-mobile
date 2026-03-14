@@ -114,6 +114,13 @@ esac
 
 CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
 
+# Prefer Android Studio's bundled JDK for this project to avoid local JAVA_HOME mismatches.
+if [ -x "/c/Program Files/Android/Android Studio/jbr/bin/java.exe" ]; then
+    JAVA_HOME="/c/Program Files/Android/Android Studio/jbr"
+elif [ -x "/mnt/c/Program Files/Android/Android Studio/jbr/bin/java.exe" ]; then
+    JAVA_HOME="/mnt/c/Program Files/Android/Android Studio/jbr"
+fi
+
 
 # Determine the Java command to use to start the JVM.
 if [ -n "$JAVA_HOME" ] ; then

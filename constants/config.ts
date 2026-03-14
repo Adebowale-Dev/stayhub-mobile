@@ -1,17 +1,28 @@
-// Change BASE_URL to your backend server address.
-// For physical device testing, use your computer's local IP, e.g.:
-//   http://192.168.1.100:5000/api
+import Constants from 'expo-constants';
+
+type ExpoExtraConfig = {
+  apiBaseUrl?: string;
+  paystackPublicKey?: string;
+  eas?: {
+    projectId?: string | null;
+  };
+};
+
+const extra = (Constants.expoConfig?.extra ?? {}) as ExpoExtraConfig;
+const fallbackApiBaseUrl = 'http://172.20.10.3:5000/api';
+const fallbackPaystackKey = 'pk_test_f5ab1691491857e39c3ca1221d7e8d5680317b13';
 
 export const API_CONFIG = {
-  BASE_URL: 'http://172.20.10.3:5000/api',
+  BASE_URL: extra.apiBaseUrl || fallbackApiBaseUrl,
   TIMEOUT: 120000,
 };
 
 export const PAYSTACK_CONFIG = {
-  PUBLIC_KEY: 'pk_test_f5ab1691491857e39c3ca1221d7e8d5680317b13',
+  PUBLIC_KEY: extra.paystackPublicKey || fallbackPaystackKey,
 };
 
 export const APP_CONFIG = {
-  APP_NAME: 'StayHub',
-  VERSION: '1.0.0',
+  APP_NAME: Constants.expoConfig?.name || 'StayHub',
+  VERSION: Constants.expoConfig?.version || '1.0.0',
+  EAS_PROJECT_ID: extra.eas?.projectId || '',
 };
