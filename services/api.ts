@@ -2,7 +2,7 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_CONFIG } from '../constants/config';
 import { useAuthStore } from '../store/authStore';
-import type { AuthResponse, DashboardData, Hostel, Room, Reservation, ReservationRequest, PaymentStatus, PaymentInitResponse, ApiResponse, Alert, InvitationHistoryEntry, StudentNotification, NotificationPreferences, NotificationSettings, } from '../types';
+import type { AuthResponse, DashboardData, Hostel, Room, Reservation, ReservationRequest, PaymentStatus, PaymentInitResponse, ApiResponse, Alert, InvitationHistoryEntry, StudentNotification, NotificationPreferences, NotificationSettings, ReservationInvitePreview, } from '../types';
 const looksLikeMongoId = (value: unknown): value is string => typeof value === 'string' && /^[a-f\d]{24}$/i.test(value);
 const unwrapData = <T>(payload: any): T => payload?.data ?? payload;
 const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
@@ -81,6 +81,49 @@ const normalizeInvitationHistoryEntry = (entry: any): InvitationHistoryEntry => 
         : entry?.bunk?.bunkNumber != null
             ? String(entry.bunk.bunkNumber)
             : null,
+});
+const normalizeReservationInvitePreview = (preview: any): ReservationInvitePreview => ({
+    ...preview,
+    friend: {
+        ...normalizeUser(preview?.friend),
+        emailMasked: preview?.friend?.emailMasked ?? null,
+        paymentStatus: preview?.friend?.paymentStatus ?? 'pending',
+        department: preview?.friend?.department ?? null,
+    },
+    room: preview?.room
+        ? {
+            ...preview.room,
+            roomNumber: preview.room.roomNumber ?? preview.room.number ?? '',
+            capacity: Number(preview.room.capacity ?? 0),
+            availableSpaces: preview.room.availableSpaces ?? Math.max(0, Number(preview.room.capacity ?? 0) - Number(preview.room.currentOccupants ?? 0)),
+        }
+        : null,
+    hostel: preview?.hostel ?? null,
+    eligibility: {
+        canInvite: Boolean(preview?.eligibility?.canInvite),
+        reason: preview?.eligibility?.reason ?? null,
+        code: preview?.eligibility?.code ?? null,
+    },
+    invitation: {
+        approvalWindowHours: Number(preview?.invitation?.approvalWindowHours ?? 24),
+        requiresPaymentBeforeApproval: Boolean(preview?.invitation?.requiresPaymentBeforeApproval),
+        notificationChannels: {
+            email: preview?.invitation?.notificationChannels?.email ?? {
+                available: false,
+                willSend: false,
+                addressMasked: null,
+            },
+            inApp: preview?.invitation?.notificationChannels?.inApp ?? {
+                available: true,
+                willSend: true,
+            },
+            push: preview?.invitation?.notificationChannels?.push ?? {
+                available: false,
+                willSend: false,
+                deviceCount: 0,
+            },
+        },
+    },
 });
 const normalizeNotification = (notification: any): StudentNotification => ({
     ...notification,
@@ -246,6 +289,21 @@ export const studentAPI = {
             data: {
                 ...response.data,
                 data: rooms,
+            },
+        };
+    },
+    previewReservationInvite: async (payload: {
+        roomId: string;
+        matricNo: string;
+        hostelId?: string;
+    }) => {
+        const response = await api.post<ApiResponse<ReservationInvitePreview>>('/student/reservation/invite-preview', payload);
+        const preview = normalizeReservationInvitePreview(unwrapData<any>(response.data));
+        return {
+            ...response,
+            data: {
+                ...response.data,
+                data: preview,
             },
         };
     },

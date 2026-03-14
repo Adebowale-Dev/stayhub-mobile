@@ -86,12 +86,77 @@ export interface Reservation {
     reservedAt?: string;
     expiresAt?: string;
     invitationHistory?: InvitationHistoryEntry[];
+    inviteTracker?: ReservationInviteTrackerItem[];
 }
 export interface GroupMember {
     matricNumber: string;
     firstName?: string;
     lastName?: string;
     status?: string;
+}
+export interface ReservationInviteTrackerItem {
+    student: Partial<User> | null;
+    status: 'sent' | 'seen' | 'approved' | 'rejected' | 'expired';
+    label: string;
+    action?: 'invited' | 'viewed' | 'approved' | 'rejected' | 'expired';
+    lastUpdatedAt?: string | null;
+    message?: string;
+    requiresPaymentBeforeApproval?: boolean;
+    emailMasked?: string | null;
+}
+export interface InviteChannelSummary {
+    available: boolean;
+    willSend: boolean;
+    addressMasked?: string | null;
+    deviceCount?: number;
+}
+export interface ReservationInvitePreview {
+    friend: {
+        _id: string;
+        firstName: string;
+        lastName: string;
+        matricNo: string;
+        matricNumber?: string;
+        email?: string;
+        emailMasked?: string | null;
+        gender?: string | null;
+        level?: number | string | null;
+        paymentStatus?: string;
+        department?: string | {
+            _id?: string;
+            name?: string;
+            code?: string;
+        } | null;
+    };
+    room?: {
+        _id: string;
+        roomNumber: string;
+        floor?: number;
+        capacity: number;
+        currentOccupants?: number;
+        availableSpaces?: number;
+    } | null;
+    hostel?: {
+        _id: string;
+        name: string;
+        code?: string;
+        gender?: string;
+        level?: number;
+    } | null;
+    eligibility: {
+        canInvite: boolean;
+        reason?: string | null;
+        code?: string;
+    };
+    invitation: {
+        approvalWindowHours: number;
+        requiresPaymentBeforeApproval: boolean;
+        notificationChannels: {
+            email: InviteChannelSummary;
+            inApp: InviteChannelSummary;
+            push: InviteChannelSummary;
+        };
+    };
 }
 export interface ReservationRequest {
     roomId: string;
@@ -100,7 +165,7 @@ export interface ReservationRequest {
 }
 export interface InvitationHistoryEntry {
     _id?: string;
-    action: 'invited' | 'approved' | 'rejected' | 'expired';
+    action: 'invited' | 'viewed' | 'approved' | 'rejected' | 'expired';
     role: 'inviter' | 'invitee';
     notes?: string | null;
     createdAt?: string;
@@ -127,6 +192,7 @@ export interface DashboardData {
     profile?: User;
     paymentStatus: 'pending' | 'paid' | 'failed';
     hasReservation: boolean;
+    availableHostels?: number;
     reservation?: Reservation;
     currentSession?: string;
     reservationStatus?: string;

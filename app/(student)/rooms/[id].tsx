@@ -5,7 +5,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { studentAPI } from '../../../services/api';
-import type { Room } from '../../../types';
+import type { ReservationInvitePreview, Room } from '../../../types';
 
 type RoomTone = {
     label: string;
@@ -51,6 +51,8 @@ export default function RoomsScreen() {
     const [modalVisible, setModalVisible] = useState(false);
     const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
     const [groupMatrics, setGroupMatrics] = useState<string[]>([]);
+    const [invitePreviews, setInvitePreviews] = useState<ReservationInvitePreview[]>([]);
+    const [validatingFriends, setValidatingFriends] = useState(false);
     const router = useRouter();
     const navigation = useNavigation();
     const theme = useTheme();
@@ -99,6 +101,7 @@ export default function RoomsScreen() {
     const openReservation = (room: Room) => {
         setSelectedRoom(room);
         setGroupMatrics([]);
+        setInvitePreviews([]);
         setModalVisible(true);
     };
 
@@ -124,6 +127,7 @@ export default function RoomsScreen() {
     const addFriend = () => {
         if (groupMatrics.length < maxFriends) {
             setGroupMatrics([...groupMatrics, '']);
+            setInvitePreviews([]);
         }
     };
 
@@ -131,10 +135,57 @@ export default function RoomsScreen() {
         const updated = [...groupMatrics];
         updated[index] = value.toUpperCase();
         setGroupMatrics(updated);
+        setInvitePreviews([]);
     };
 
     const removeFriend = (index: number) => {
         setGroupMatrics(groupMatrics.filter((_, currentIndex) => currentIndex !== index));
+        setInvitePreviews([]);
+    };
+    const validateInvitePreviews = async () => {
+        if (!selectedRoom || filledMatrics.length === 0) {
+            setInvitePreviews([]);
+            return [];
+        }
+        setValidatingFriends(true);
+        try {
+            const previews = await Promise.all(filledMatrics.map(async (matricNo) => {
+                const response = await studentAPI.previewReservationInvite({
+                    roomId: selectedRoom._id,
+                    hostelId: typeof hostelId === 'string' ? hostelId : undefined,
+                    matricNo,
+                });
+                return response.data.data;
+            }));
+            setInvitePreviews(previews);
+            return previews;
+        }
+        finally {
+            setValidatingFriends(false);
+        }
+    };
+    const getDepartmentLabel = (preview: ReservationInvitePreview) => {
+        const department = preview.friend.department;
+        if (!department) {
+            return null;
+        }
+        if (typeof department === 'string') {
+            return department;
+        }
+        return department.name || department.code || null;
+    };
+    const getInviteChannelsLabel = (preview: ReservationInvitePreview) => {
+        const channels: string[] = [];
+        if (preview.invitation.notificationChannels.email.willSend) {
+            channels.push('email');
+        }
+        if (preview.invitation.notificationChannels.inApp.willSend) {
+            channels.push('in-app');
+        }
+        if (preview.invitation.notificationChannels.push.willSend) {
+            channels.push('push');
+        }
+        return channels.length > 0 ? channels.join(', ') : 'StayHub notifications';
     };
 
     const handleReserve = async () => {
@@ -155,9 +206,14 @@ export default function RoomsScreen() {
 
         setReserving(true);
         try {
+            if (filledMatrics.length > 0) {
+                await validateInvitePreviews();
+            }
             await studentAPI.reserveRoom(payload);
             setModalVisible(false);
-            Alert.alert('Success', 'Room reserved successfully.', [
+            Alert.alert('Success', filledMatrics.length > 0
+                ? 'Room reserved successfully. Your friends will receive email and StayHub notifications to approve within 24 hours.'
+                : 'Room reserved successfully.', [
                 { text: 'View reservation', onPress: () => router.push('/(student)/reservation') },
                 { text: 'Done' },
             ]);
@@ -468,6 +524,65 @@ export default function RoomsScreen() {
                                                 <Text style={styles.addFriendButtonText}>Add a friend</Text>
                                             </TouchableOpacity>
                                         ) : null}
+
+                                        {filledMatrics.length > 0 ? (
+                                            <TouchableOpacity
+                                                style={[styles.validateInviteButton, validatingFriends && styles.disabledButton]}
+                                                activeOpacity={0.85}
+                                                onPress={() => { validateInvitePreviews().catch((errorResponse: any) => {
+                                                    Alert.alert('Invite check failed', errorResponse.response?.data?.message ?? 'Could not verify this matric number.');
+                                                }); }}
+                                                disabled={validatingFriends}
+                                            >
+                                                {validatingFriends ? (
+                                                    <ActivityIndicator size="small" color="#1565C0" />
+                                                ) : (
+                                                    <>
+                                                        <MaterialCommunityIcons name="email-check-outline" size={18} color="#1565C0" />
+                                                        <Text style={styles.validateInviteButtonText}>Check invite delivery</Text>
+                                                    </>
+                                                )}
+                                            </TouchableOpacity>
+                                        ) : null}
+
+                                        {invitePreviews.length > 0 ? (
+                                            <View style={styles.previewList}>
+                                                {invitePreviews.map((preview) => (
+                                                    <View key={preview.friend._id} style={[styles.previewCard, { backgroundColor: theme.colors.background }]}>
+                                                        <View style={styles.previewCardHeader}>
+                                                            <View>
+                                                                <Text style={[styles.previewName, { color: theme.colors.onSurface }]}>
+                                                                    {preview.friend.firstName} {preview.friend.lastName}
+                                                                </Text>
+                                                                <Text style={[styles.previewMeta, { color: theme.colors.onSurfaceVariant }]}>
+                                                                    {preview.friend.matricNo}
+                                                                    {getDepartmentLabel(preview) ? ` • ${getDepartmentLabel(preview)}` : ''}
+                                                                    {preview.friend.level ? ` • ${preview.friend.level} level` : ''}
+                                                                </Text>
+                                                            </View>
+                                                            <View style={styles.previewStatusPill}>
+                                                                <Text style={styles.previewStatusPillText}>Ready</Text>
+                                                            </View>
+                                                        </View>
+
+                                                        <Text style={[styles.previewCopy, { color: theme.colors.onSurfaceVariant }]}>
+                                                            Invite will go out by {getInviteChannelsLabel(preview)}
+                                                            {preview.invitation.notificationChannels.email.addressMasked
+                                                                ? ` to ${preview.invitation.notificationChannels.email.addressMasked}`
+                                                                : ''}
+                                                            . Approval closes in {preview.invitation.approvalWindowHours} hours.
+                                                        </Text>
+
+                                                        {preview.invitation.requiresPaymentBeforeApproval ? (
+                                                            <View style={styles.previewWarningRow}>
+                                                                <MaterialCommunityIcons name="credit-card-clock-outline" size={16} color="#EF6C00" />
+                                                                <Text style={styles.previewWarningText}>Payment is still pending for this friend, so they will need to pay before approval.</Text>
+                                                            </View>
+                                                        ) : null}
+                                                    </View>
+                                                ))}
+                                            </View>
+                                        ) : null}
                                     </>
                                 )}
 
@@ -480,26 +595,26 @@ export default function RoomsScreen() {
                                             ? 'You are reserving 1 bed for yourself.'
                                             : `You are reserving ${totalReserving} beds - you plus ${filledMatrics.length} friend${
                                                   filledMatrics.length > 1 ? 's' : ''
-                                              } in the same room.`}
+                                              } in the same room. StayHub will email them and also notify them inside the app.`}
                                     </Text>
                                 </View>
                             </ScrollView>
 
                             <View style={styles.modalActions}>
                                 <TouchableOpacity
-                                    style={[styles.modalCancelButton, reserving && styles.disabledButton]}
+                                    style={[styles.modalCancelButton, (reserving || validatingFriends) && styles.disabledButton]}
                                     activeOpacity={0.85}
                                     onPress={() => setModalVisible(false)}
-                                    disabled={reserving}
+                                    disabled={reserving || validatingFriends}
                                 >
                                     <Text style={styles.modalCancelButtonText}>Cancel</Text>
                                 </TouchableOpacity>
 
                                 <TouchableOpacity
-                                    style={[styles.modalPrimaryButton, reserving && styles.disabledButton]}
+                                    style={[styles.modalPrimaryButton, (reserving || validatingFriends) && styles.disabledButton]}
                                     activeOpacity={0.85}
                                     onPress={handleReserve}
-                                    disabled={reserving}
+                                    disabled={reserving || validatingFriends}
                                 >
                                     {reserving ? (
                                         <ActivityIndicator size="small" color="#FFFFFF" />
@@ -981,6 +1096,83 @@ const styles = StyleSheet.create({
         color: '#1565C0',
         fontSize: 13,
         fontWeight: '700',
+    },
+    validateInviteButton: {
+        marginTop: 14,
+        alignSelf: 'flex-start',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: '#BFDBFE',
+        backgroundColor: '#F8FBFF',
+    },
+    validateInviteButtonText: {
+        color: '#1565C0',
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    previewList: {
+        marginTop: 14,
+        gap: 10,
+    },
+    previewCard: {
+        borderRadius: 18,
+        paddingHorizontal: 14,
+        paddingVertical: 14,
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+        gap: 10,
+    },
+    previewCardHeader: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        justifyContent: 'space-between',
+        gap: 12,
+    },
+    previewName: {
+        fontSize: 15,
+        fontWeight: '800',
+    },
+    previewMeta: {
+        fontSize: 12,
+        lineHeight: 18,
+        marginTop: 4,
+    },
+    previewStatusPill: {
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 999,
+        backgroundColor: '#E8F5E9',
+    },
+    previewStatusPillText: {
+        color: '#2E7D32',
+        fontSize: 11,
+        fontWeight: '800',
+        textTransform: 'uppercase',
+        letterSpacing: 0.4,
+    },
+    previewCopy: {
+        fontSize: 13,
+        lineHeight: 19,
+    },
+    previewWarningRow: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 8,
+        borderRadius: 14,
+        backgroundColor: '#FFF7ED',
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+    },
+    previewWarningText: {
+        flex: 1,
+        color: '#9A3412',
+        fontSize: 12,
+        lineHeight: 18,
     },
     summaryBanner: {
         marginTop: 18,

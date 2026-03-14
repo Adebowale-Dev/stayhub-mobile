@@ -5,7 +5,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { studentAPI } from '../../services/api';
-import type { GroupMember, InvitationHistoryEntry, Reservation } from '../../types';
+import type { GroupMember, InvitationHistoryEntry, Reservation, ReservationInviteTrackerItem } from '../../types';
 
 type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
@@ -138,6 +138,10 @@ export default function ReservationScreen() {
     const [refreshing, setRefreshing] = useState(false);
     const [cancelling, setCancelling] = useState(false);
     const [responding, setResponding] = useState<'approve' | 'reject' | null>(null);
+    const [actionFeedback, setActionFeedback] = useState<{
+        tone: 'success' | 'info';
+        message: string;
+    } | null>(null);
     const [addModalVisible, setAddModalVisible] = useState(false);
     const [newMatrics, setNewMatrics] = useState<string[]>(['']);
     const [addingMembers, setAddingMembers] = useState(false);
@@ -237,9 +241,15 @@ export default function ReservationScreen() {
                         Alert.alert(
                             action === 'approve' ? 'Approved' : 'Rejected',
                             action === 'approve'
-                                ? 'Your room invitation has been approved successfully.'
+                                ? 'Your room invitation has been approved successfully. Your bed space is now confirmed. Proceed to porter check-in when the check-in window opens.'
                                 : 'The room invitation has been rejected and the space released.',
                         );
+                        setActionFeedback({
+                            tone: action === 'approve' ? 'success' : 'info',
+                            message: action === 'approve'
+                                ? 'Your bed space is now confirmed. Go to your hostel porter desk when check-in opens so the porter can complete your check-in.'
+                                : 'Invitation rejected. The room space has been released for another student.',
+                        });
                         await load();
                     }
                     catch (error: any) {
@@ -348,6 +358,14 @@ export default function ReservationScreen() {
     };
 
     const getHistoryMeta = (entry: InvitationHistoryEntry): Tone => {
+        if (entry.action === 'viewed') {
+            return {
+                label: 'Seen',
+                color: '#1565C0',
+                backgroundColor: '#E3F2FD',
+                icon: 'eye-outline',
+            };
+        }
         if (entry.action === 'approved') {
             return {
                 label: 'Approved',
@@ -392,6 +410,14 @@ export default function ReservationScreen() {
 
         if (entry.action === 'invited' && entry.role === 'invitee') {
             return `${otherPerson} reserved a room for you`;
+        }
+
+        if (entry.action === 'viewed' && entry.role === 'inviter') {
+            return `${otherPerson} opened your invitation`;
+        }
+
+        if (entry.action === 'viewed' && entry.role === 'invitee') {
+            return 'You opened the reserved room invitation';
         }
 
         if (entry.action === 'approved' && entry.role === 'inviter') {
@@ -480,6 +506,105 @@ export default function ReservationScreen() {
                                         {formatDateTimeLabel(entry.createdAt)}
                                     </Text>
                                 </View>
+                            </View>
+                        );
+                    })}
+                </View>
+            </View>
+        );
+    };
+    const getTrackerTone = (status?: ReservationInviteTrackerItem['status']): Tone => {
+        if (status === 'seen') {
+            return {
+                label: 'Seen',
+                color: '#1565C0',
+                backgroundColor: '#E3F2FD',
+                icon: 'eye-outline',
+            };
+        }
+        if (status === 'approved') {
+            return {
+                label: 'Approved',
+                color: '#2E7D32',
+                backgroundColor: '#E8F5E9',
+                icon: 'check-circle-outline',
+            };
+        }
+        if (status === 'rejected') {
+            return {
+                label: 'Rejected',
+                color: '#C62828',
+                backgroundColor: '#FFEBEE',
+                icon: 'close-circle-outline',
+            };
+        }
+        if (status === 'expired') {
+            return {
+                label: 'Expired',
+                color: '#6D4C41',
+                backgroundColor: '#EFEBE9',
+                icon: 'timer-off-outline',
+            };
+        }
+        return {
+            label: 'Sent',
+            color: '#EF6C00',
+            backgroundColor: '#FFF3E0',
+            icon: 'email-fast-outline',
+        };
+    };
+    const renderInviteTrackerCard = () => {
+        const tracker = reservation?.inviteTracker ?? [];
+        if (tracker.length === 0) {
+            return null;
+        }
+        return (
+            <View style={[styles.panel, { backgroundColor: theme.colors.surface }]}>
+                <View style={styles.panelHeader}>
+                    <View>
+                        <Text style={[styles.panelEyebrow, { color: theme.colors.onSurfaceVariant }]}>Tracker</Text>
+                        <Text style={[styles.panelTitle, { color: theme.colors.onSurface }]}>Friend invite tracker</Text>
+                    </View>
+                    <View style={styles.headerBadge}>
+                        <Text style={styles.headerBadgeText}>{tracker.length}</Text>
+                    </View>
+                </View>
+
+                <Divider style={{ backgroundColor: theme.colors.surfaceVariant }} />
+
+                <View style={styles.trackerList}>
+                    {tracker.map((item, index) => {
+                        const tone = getTrackerTone(item.status);
+                        const studentName = getHistoryParticipantName(item.student, 'Invited friend');
+                        const subtitle = [
+                            item.student?.matricNo || item.student?.matricNumber || 'Matric unavailable',
+                            item.emailMasked || null,
+                            item.lastUpdatedAt ? `Updated ${formatDateTimeLabel(item.lastUpdatedAt)}` : null,
+                        ]
+                            .filter(Boolean)
+                            .join(' | ');
+
+                        return (
+                            <View key={item.student?._id ?? `${item.status}-${index}`} style={styles.memberSpacer}>
+                                {renderMemberCard(
+                                    studentName,
+                                    subtitle,
+                                    tone,
+                                    getInitials(item.student?.firstName, item.student?.lastName, 'FR'),
+                                    tone.color,
+                                )}
+                                <Text style={[styles.trackerMessage, { color: theme.colors.onSurfaceVariant }]}>
+                                    {item.message || 'Invite created and waiting for a response.'}
+                                </Text>
+                                {item.requiresPaymentBeforeApproval &&
+                                item.status !== 'approved' &&
+                                item.status !== 'rejected' &&
+                                item.status !== 'expired' ? (
+                                    <View style={styles.previewWarningRow}>
+                                        <MaterialCommunityIcons name="credit-card-clock-outline" size={16} color="#EF6C00" />
+                                        <Text style={styles.previewWarningText}>Payment is still pending for this friend, so approval can only happen after payment.</Text>
+                                    </View>
+                                ) : null}
                             </View>
                         );
                     })}
@@ -582,6 +707,8 @@ export default function ReservationScreen() {
         !reservation.reservedBy ||
         reservation.reservedBy._id === reservation.student?._id ||
         !isTemporaryInvite;
+    const isFriendReservedRoom =
+        Boolean(reservation.reservedBy?._id && reservation.reservedBy._id !== reservation.student?._id);
     const canAddFriends = reservation.status === 'confirmed' && availableSpaces > 0;
     const roomMembers: GroupMember[] = reservation.groupMembers ?? [];
     const approvalDeadline = reservation.expiresAt ? formatDateTimeLabel(reservation.expiresAt) : null;
@@ -682,6 +809,24 @@ export default function ReservationScreen() {
                             </View>
                         ) : null}
 
+                        {actionFeedback ? (
+                            <View style={[
+                                styles.feedbackBanner,
+                                actionFeedback.tone === 'success' ? styles.feedbackBannerSuccess : styles.feedbackBannerInfo,
+                            ]}>
+                                <View style={styles.feedbackBannerIcon}>
+                                    <MaterialCommunityIcons
+                                        name={actionFeedback.tone === 'success' ? 'check-circle-outline' : 'information-outline'}
+                                        size={18}
+                                        color={actionFeedback.tone === 'success' ? '#2E7D32' : '#1565C0'}
+                                    />
+                                </View>
+                                <Text style={actionFeedback.tone === 'success' ? styles.feedbackBannerTextSuccess : styles.feedbackBannerTextInfo}>
+                                    {actionFeedback.message}
+                                </Text>
+                            </View>
+                        ) : null}
+
                         <View style={[styles.panel, { backgroundColor: theme.colors.surface }]}>
                             <View style={styles.panelHeader}>
                                 <View>
@@ -736,6 +881,40 @@ export default function ReservationScreen() {
                             </View>
                         </View>
                     </View>
+
+                    {reservation.status === 'confirmed' && isFriendReservedRoom ? (
+                        <View style={styles.section}>
+                            <View style={[styles.panel, { backgroundColor: theme.colors.surface }]}>
+                                <View style={styles.panelHeader}>
+                                    <View>
+                                        <Text style={[styles.panelEyebrow, { color: theme.colors.onSurfaceVariant }]}>Next step</Text>
+                                        <Text style={[styles.panelTitle, { color: theme.colors.onSurface }]}>Porter check-in guidance</Text>
+                                    </View>
+                                </View>
+
+                                <View style={styles.nextStepsList}>
+                                    <View style={[styles.nextStepCard, { backgroundColor: theme.colors.background }]}>
+                                        <Text style={[styles.nextStepTitle, { color: theme.colors.onSurface }]}>1. Wait for check-in to open</Text>
+                                        <Text style={[styles.nextStepCopy, { color: theme.colors.onSurfaceVariant }]}>
+                                            Your bed space is confirmed in StayHub already, so you do not need to reserve again.
+                                        </Text>
+                                    </View>
+                                    <View style={[styles.nextStepCard, { backgroundColor: theme.colors.background }]}>
+                                        <Text style={[styles.nextStepTitle, { color: theme.colors.onSurface }]}>2. Go to your hostel porter desk</Text>
+                                        <Text style={[styles.nextStepCopy, { color: theme.colors.onSurfaceVariant }]}>
+                                            Tell the porter your matric number and that your room approval is already recorded in StayHub.
+                                        </Text>
+                                    </View>
+                                    <View style={[styles.nextStepCard, { backgroundColor: theme.colors.background }]}>
+                                        <Text style={[styles.nextStepTitle, { color: theme.colors.onSurface }]}>3. Complete physical check-in</Text>
+                                        <Text style={[styles.nextStepCopy, { color: theme.colors.onSurfaceVariant }]}>
+                                            Once the porter verifies you, your reservation moves from confirmed to checked in.
+                                        </Text>
+                                    </View>
+                                </View>
+                            </View>
+                        </View>
+                    ) : null}
 
                     <View style={styles.section}>
                         <View style={[styles.panel, { backgroundColor: theme.colors.surface }]}>
@@ -809,6 +988,8 @@ export default function ReservationScreen() {
                             ) : null}
                         </View>
                     </View>
+
+                    {(reservation?.inviteTracker?.length ?? 0) > 0 ? <View style={styles.section}>{renderInviteTrackerCard()}</View> : null}
 
                     <View style={styles.section}>{renderHistoryCard()}</View>
 
@@ -1219,6 +1400,41 @@ const styles = StyleSheet.create({
         fontSize: 14,
         fontWeight: '800',
     },
+    feedbackBanner: {
+        borderRadius: 18,
+        paddingHorizontal: 14,
+        paddingVertical: 14,
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 10,
+        marginBottom: 18,
+    },
+    feedbackBannerSuccess: {
+        backgroundColor: '#E8F5E9',
+    },
+    feedbackBannerInfo: {
+        backgroundColor: '#E3F2FD',
+    },
+    feedbackBannerIcon: {
+        width: 28,
+        height: 28,
+        borderRadius: 10,
+        backgroundColor: '#FFFFFF',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    feedbackBannerTextSuccess: {
+        flex: 1,
+        fontSize: 13,
+        lineHeight: 19,
+        color: '#256029',
+    },
+    feedbackBannerTextInfo: {
+        flex: 1,
+        fontSize: 13,
+        lineHeight: 19,
+        color: '#245D8B',
+    },
     disabledAction: {
         opacity: 0.7,
     },
@@ -1275,6 +1491,16 @@ const styles = StyleSheet.create({
     },
     memberSpacer: {
         marginTop: 10,
+    },
+    trackerList: {
+        paddingTop: 16,
+        gap: 4,
+    },
+    trackerMessage: {
+        fontSize: 12,
+        lineHeight: 18,
+        marginTop: 8,
+        paddingHorizontal: 4,
     },
     memberAvatar: {
         width: 46,
@@ -1358,6 +1584,40 @@ const styles = StyleSheet.create({
         color: '#1565C0',
         fontSize: 14,
         fontWeight: '800',
+    },
+    nextStepsList: {
+        gap: 12,
+        marginTop: 8,
+    },
+    nextStepCard: {
+        borderRadius: 18,
+        paddingHorizontal: 14,
+        paddingVertical: 14,
+    },
+    nextStepTitle: {
+        fontSize: 14,
+        fontWeight: '800',
+        marginBottom: 6,
+    },
+    nextStepCopy: {
+        fontSize: 13,
+        lineHeight: 19,
+    },
+    previewWarningRow: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 8,
+        borderRadius: 14,
+        backgroundColor: '#FFF7ED',
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        marginTop: 8,
+    },
+    previewWarningText: {
+        flex: 1,
+        color: '#9A3412',
+        fontSize: 12,
+        lineHeight: 18,
     },
     timelineList: {
         paddingTop: 16,
@@ -1585,3 +1845,4 @@ const styles = StyleSheet.create({
         fontWeight: '800',
     },
 });
+
