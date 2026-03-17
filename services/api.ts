@@ -5,6 +5,36 @@ import { useAuthStore } from '../store/authStore';
 import type { AuthResponse, DashboardData, Hostel, Room, Reservation, ReservationRequest, PaymentStatus, PaymentInitResponse, ApiResponse, Alert, InvitationHistoryEntry, StudentNotification, NotificationPreferences, NotificationSettings, ReservationInvitePreview, } from '../types';
 const looksLikeMongoId = (value: unknown): value is string => typeof value === 'string' && /^[a-f\d]{24}$/i.test(value);
 const unwrapData = <T>(payload: any): T => payload?.data ?? payload;
+const API_ORIGIN = API_CONFIG.BASE_URL.replace(/\/api\/?$/, '');
+const resolveProfilePictureUrl = (value: unknown) => {
+    if (typeof value !== 'string') {
+        return value;
+    }
+    const trimmedValue = value.trim();
+    if (!trimmedValue) {
+        return null;
+    }
+    if (trimmedValue.startsWith('data:') || trimmedValue.startsWith('blob:')) {
+        return trimmedValue;
+    }
+    const toApiUrl = (pathname: string) => {
+        const normalizedPath = pathname.startsWith('/') ? pathname : `/${pathname}`;
+        return `${API_ORIGIN}${normalizedPath}`;
+    };
+    try {
+        const parsedUrl = new URL(trimmedValue);
+        if (parsedUrl.pathname.startsWith('/uploads/')) {
+            return toApiUrl(parsedUrl.pathname);
+        }
+        return parsedUrl.toString();
+    }
+    catch {
+        if (trimmedValue.startsWith('/uploads/') || trimmedValue.startsWith('uploads/')) {
+            return toApiUrl(trimmedValue);
+        }
+        return trimmedValue;
+    }
+};
 const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
     pushEnabled: true,
     emailEscalationEnabled: true,
@@ -32,6 +62,7 @@ const normalizeUser = (user: any) => {
         matricNumber: user.matricNumber ?? user.matricNo,
         phone: user.phone ?? user.phoneNumber,
         phoneNumber: user.phoneNumber ?? user.phone,
+        profilePicture: resolveProfilePictureUrl(user.profilePicture),
         level: user.level != null ? String(user.level) : user.level,
         theme: user.theme === 'dark' ? 'dark' : user.theme === 'light' ? 'light' : undefined,
         notificationPreferences: normalizeNotificationPreferences(user.notificationPreferences),
