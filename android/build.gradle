@@ -1,12 +1,38 @@
 
+def resolveNodeExecutable() {
+    def envNode = System.getenv("NODE_BINARY")
+    if (envNode && new File(envNode).exists()) {
+        return envNode
+    }
+
+    def candidateRoots = [
+        System.getenv("ProgramFiles"),
+        System.getenv("ProgramFiles(x86)"),
+        System.getenv("LOCALAPPDATA")
+    ].findAll { it }
+
+    def nodeCandidate = candidateRoots
+        .collectMany { root ->
+            [
+                new File(root, "nodejs/node.exe"),
+                new File(root, "Programs/nodejs/node.exe")
+            ]
+        }
+        .find { it.exists() }
+
+    return nodeCandidate?.absolutePath ?: "node"
+}
+
+def nodeExecutable = resolveNodeExecutable()
+
 
 buildscript {
     ext {
-        buildToolsVersion = findProperty('android.buildToolsVersion') ?: '34.0.0'
-        minSdkVersion = Integer.parseInt(findProperty('android.minSdkVersion') ?: '23')
-        compileSdkVersion = Integer.parseInt(findProperty('android.compileSdkVersion') ?: '34')
-        targetSdkVersion = Integer.parseInt(findProperty('android.targetSdkVersion') ?: '34')
-        kotlinVersion = findProperty('android.kotlinVersion') ?: '1.9.23'
+        buildToolsVersion = findProperty('android.buildToolsVersion') ?: '35.0.0'
+        minSdkVersion = Integer.parseInt(findProperty('android.minSdkVersion') ?: '24')
+        compileSdkVersion = Integer.parseInt(findProperty('android.compileSdkVersion') ?: '35')
+        targetSdkVersion = Integer.parseInt(findProperty('android.targetSdkVersion') ?: '35')
+        kotlinVersion = findProperty('android.kotlinVersion') ?: '1.9.24'
 
         ndkVersion = "26.1.10909125"
     }
@@ -28,16 +54,24 @@ allprojects {
     repositories {
         maven {
             
-            url(new File(['node', '--print', "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim(), '../android'))
+            url(new File([nodeExecutable, '--print', "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim(), '../android'))
         }
         maven {
             
-            url(new File(['node', '--print', "require.resolve('jsc-android/package.json', { paths: [require.resolve('react-native/package.json')] })"].execute(null, rootDir).text.trim(), '../dist'))
+            url(new File([nodeExecutable, '--print', "require.resolve('jsc-android/package.json', { paths: [require.resolve('react-native/package.json')] })"].execute(null, rootDir).text.trim(), '../dist'))
         }
 
         maven { url 'https://maven-central.storage-download.googleapis.com/maven2/' }
         google()
         mavenCentral()
         maven { url 'https://www.jitpack.io' }
+    }
+}
+
+subprojects { subproject ->
+    subproject.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+        kotlinOptions {
+            jvmTarget = "17"
+        }
     }
 }

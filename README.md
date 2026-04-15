@@ -5,16 +5,12 @@ React Native + Expo mobile app for the StayHub student hostel portal.
 ## Quick Start
 
 ```bash
-# Install dependencies
 npm install
 
-# Start development server
 npm start
 
-# Run on Android emulator
 npm run android
 
-# Run on iOS simulator (Mac only)
 npm run ios
 ```
 
@@ -61,16 +57,12 @@ constants/config  API base URL & Paystack key
 ## Build (Production)
 
 ```bash
-# Install EAS CLI
 npm install -g eas-cli
 
-# Login and configure
 eas login
 eas build:configure
 
-# Build APK (Android)
 eas build --platform android --profile preview
 
-# Build AAB for Play Store
 eas build --platform android --profile production
 ```
